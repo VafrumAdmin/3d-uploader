@@ -1,0 +1,160 @@
+name: Build macOS App
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+          pip install pyinstaller
+
+      - name: Install Playwright Chromium
+        run: python -m playwright install chromium
+
+      - name: Create launcher script
+        run: |
+          cat > _launcher.py << 'PYEOF'
+          """macOS App Launcher fuer 3D Model Multi-Uploader"""
+          import sys
+          import os
+          import webbrowser
+          import threading
+          import time
+
+          if getattr(sys, "frozen", False):
+              bundle_dir = sys._MEIPASS
+              sys.path.insert(0, bundle_dir)
+              os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+          else:
+              bundle_dir = os.path.dirname(os.path.abspath(__file__))
+
+          os.chdir(bundle_dir)
+
+          def open_browser():
+              time.sleep(3)
+              webbrowser.open("http://localhost:8100")
+
+          if __name__ == "__main__":
+              threading.Thread(target=open_browser, daemon=True).start()
+              import uvicorn
+              uvicorn.run("main:app", host="127.0.0.1", port=8100, log_level="info")
+          PYEOF
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller \
+            --name "3D-Uploader" \
+            --windowed \
+            --noconfirm \
+            --clean \
+            --add-data "frontend_dist:frontend_dist" \
+            --add-data "backend/config.py:." \
+            --add-data "backend/database.py:." \
+            --add-data "backend/main.py:." \
+            --add-data "backend/models:models" \
+            --add-data "backend/schemas:schemas" \
+            --add-data "backend/routers:routers" \
+            --add-data "backend/services:services" \
+            --add-data "backend/browser:browser" \
+            --add-data "backend/uploaders:uploaders" \
+            --hidden-import uvicorn \
+            --hidden-import uvicorn.logging \
+            --hidden-import uvicorn.loops \
+            --hidden-import uvicorn.loops.auto \
+            --hidden-import uvicorn.protocols \
+            --hidden-import uvicorn.protocols.http \
+            --hidden-import uvicorn.protocols.http.auto \
+            --hidden-import uvicorn.protocols.websockets \
+            --hidden-import uvicorn.protocols.websockets.auto \
+            --hidden-import uvicorn.lifespan \
+            --hidden-import uvicorn.lifespan.on \
+            --hidden-import fastapi \
+            --hidden-import sqlalchemy \
+            --hidden-import sqlalchemy.dialects.sqlite \
+            --hidden-import aiosqlite \
+            --hidden-import multipart \
+            --hidden-import sse_starlette \
+            --hidden-import config \
+            --hidden-import database \
+            --hidden-import models \
+            --hidden-import models.model3d \
+            --hidden-import models.upload \
+            --hidden-import models.platform_session \
+            --hidden-import schemas \
+            --hidden-import schemas.model3d \
+            --hidden-import schemas.upload \
+            --hidden-import schemas.platform \
+            --hidden-import routers \
+            --hidden-import routers.models \
+            --hidden-import routers.files \
+            --hidden-import routers.uploads \
+            --hidden-import routers.platforms \
+            --hidden-import services \
+            --hidden-import services.upload_worker \
+            --hidden-import browser \
+            --hidden-import browser.manager \
+            --hidden-import uploaders \
+            --hidden-import uploaders.base_uploader \
+            --hidden-import uploaders.makerworld \
+            --hidden-import uploaders.crealitycloud \
+            --hidden-import uploaders.makeronline \
+            --osx-bundle-identifier "com.3duploader.app" \
+            _launcher.py
+
+      - name: Ad-hoc sign app
+        run: |
+          codesign --force --deep --sign - dist/3D-Uploader.app
+          xattr -cr dist/3D-Uploader.app
+
+      - name: Create ZIP
+        run: |
+          cd dist
+          zip -r ../3D-Uploader-macOS.zip 3D-Uploader.app
+          cd ..
+          ls -lh 3D-Uploader-macOS.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: 3D-Uploader-macOS
+          path: 3D-Uploader-macOS.zip
+
+      - name: Create Release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0
+          name: "3D-Uploader v1.0.0"
+          body: |
+            ## 3D Model Multi-Uploader fuer macOS
+
+            Lade deine 3D-Modelle automatisch auf MakerWorld, Creality Cloud und Makeronline hoch.
+
+            ### Installation
+            1. ZIP herunterladen
+            2. Entpacken
+            3. `3D-Uploader.app` in den Programme-Ordner ziehen
+            4. Beim ersten Start: Rechtsklick > "Oeffnen" > "Oeffnen" bestaetigen
+            5. **Wichtig:** Beim allerersten Start muss Playwright Chromium installiert werden:
+               Terminal oeffnen und ausfuehren: `python3 -m playwright install chromium`
+
+            ### Nutzung
+            - App starten → Browser oeffnet sich auf http://localhost:8100
+            - Einstellungen → Bei MakerWorld/Creality/Makeronline einloggen
+            - Neues Modell → STL + Fotos hochladen → Plattformen waehlen → Upload starten
+          files: 3D-Uploader-macOS.zip
+          make_latest: true
